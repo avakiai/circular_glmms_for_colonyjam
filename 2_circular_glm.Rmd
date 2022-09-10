@@ -1,163 +1,209 @@
 ---
-title: "Circular GLM"
+title: "Circular GLMMs for bat vocalizations"
 output:
   html_document:
     df_print: paged
 ---
 
-Circular Generalized Linear Model fit to our data.
 
-First, let's split the data into a training and test set 
-```{r Set up cross-val}
+###Background
+We conducted an experiment in which we recorded vocalizations from groups of freely
+socializing bats. During acoustic recordings, we played three different kinds of 
+white noise. This white noise was amplitude modulated either at 8Hz or 15Hz. We 
+wanted to know whether the bats preferred to vocalize at certain points in the 
+ongoing amplitude modulation cycle for each of the different types of noise. 
+
+###Aim
+Using circular GLMMs, we would like to model and describe the effect of 
+**white noise condition** x **amplitude modulation rate** on the **call onsets**. 
+
+Call onsets are provided in the sample data in two ways, for each call event (row)
+we have recorded the call onset in seconds (`start.per`) and in radians (`start.phase`) relative
+to the start of the amplitude modulation cycle in which the call was emitted. 
+
+We will use the call onsets in radians for analysis because the two modulation rate
+conditions have different periods (125ms and 67ms, respectively), so using call timing
+within the cycle in radians allows us to compare across these two conditions:
+
+###Data
+
+Outcome variable:
+*`start.phase`: call onsets in radians, 0-2pi; 0/2pi represents the amplitude trough, 
+while pi represents the amplitude peak
+
+Predictor variables:
+*`condition`: white noise types, either "A", "B", or "C"
+*`modulation`: rate at which the white noise was amplitude modulated, either 8 or 15Hz
+
+Grouping variables are:
+*`group`: we tested four groups of bats, labelled 1-4; this should be used as a grouping/
+random effects variable
+*`session`: each group was tested on 5 days, 1-5; this can be used to determine 
+whether changes in calling patterns emerged over time
+*`minute`: this indicates the minute since the start of the current recording
+condition when the call occurred; each condition was recorded for ~1 hour; note that 
+some rows have NA's here; can also be used to track emergence of call patterns
+
+###Model
+Instantaneous phase of call onsets predicted by white noise type and amplitude modulation
+rate, for each group of animals.
+
+$\theta_{call} ~ white noise * modulation + group$
+
+
+#### Setup
+```{r Setup, message=FALSE, warning=FALSE}
 library(tidyverse)
+library(circular)
 library(bpnreg)
-library(caret)
 set.seed(42)
+```
 
-calls <- read.csv("sample_data.csv") %>%
-  mutate(max.per = 1/modulation, .before = "start.per") %>% 
-  # convert period of call onsets into phases between 0 and 2pi
-  mutate(start.phase = (start.per/max.per)*(2*pi), .before = "start.per",
-         modulation = factor(modulation))
+Load in our sample data. 
+```{r Load}
+calls <- read.csv("sample_data.csv")
+```
 
+Convert start.phase to circular data (is this necessary?)...
+```{r Recode}
 glm.calls <- calls %>% mutate(phase.circ = circular(start.phase, 
                                                  units = "radians", 
                                                  zero = 0, 
-                                                 modulo = "asis", #?
+                                                 modulo = "asis", 
                                                  rotation = "counter"), .after = start.phase) %>%
-          dplyr::select(c(phase.circ, start.phase, start.per, condition, session, modulation, group)) %>%
-                            # quick and dirty version of dummy coding
-                            mutate(condition = as.factor(as.numeric(as.factor(condition))-1), 
-                                   modulation = as.factor(as.numeric(as.factor(modulation))-1),
-                                   group = as.numeric(group))
+                      # dummy coding
+                      mutate(condition = as.factor(as.numeric(as.factor(condition))-1), 
+                             modulation = as.factor(as.numeric(as.factor(modulation))-1),
+                             group = as.numeric(group)) %>%
+                      select(-minute)
 
 head(glm.calls)
 
-saveRDS(object = glm.calls, 'glmdata')
-glm.calls <- readRDS('glmdata')
-
-# split data
-training.samples <- glm.calls$modulation %>% caret::createDataPartition(p = 0.8, list = FALSE) 
-train.data  <- glm.calls[training.samples, ] 
-test.data <- glm.calls[-training.samples, ]
-saveRDS(object = train.data, 'trainingdata')
-
-tibble(
-  cbind(train.data %>% group_by(modulation, condition) %>% summarise(n_train = length(phase.circ)),
-        test.data %>% group_by(modulation, condition) %>% summarise(n_test = length(phase.circ)) 
-        %>% ungroup() %>% dplyr::select(n_test)))
-
-
+# double check range of outcome variable (in radians, 0-2pi)
+min(glm.calls$phase.circ)
+max(glm.calls$phase.circ)
 ```
 
-Okay, next we're going to try to model the circular data using either the wrapped 
-or a projected normal general linear model.
+#### Models
 
-
-##### Bayesian Models
-Build-up procedure:
-
+##### Fixed-effects only
+Circular coefficients provide summary statistics (mean, mode, standard deviation 
+and 95% highest posterior density interval) of the posterior samples:
 ```{r}
-# example 1
-fit.Motor <- bpnr(pred.I = Phaserad ~ 1 + Cond, data = Motor,
-                  its = 100, burn = 10, n.lag = 3)
-  fit.Motor
-  
-  # try this
-  predict(fit.Motor)
-
-# compare r and mm
-
-fitne <- bpnme(Error.rad ~ Maze + Trial.type + (1|Subject), Maps, its = 100)
-
-fitr <- bpnr(Error.rad ~ Maze + Trial.type, Maps, its = 100)
-
-
-
-  coef_circ(fitne, type = "categorical", units = "radians")
-
-  traceplot(fitne, parameter = "beta1")
-
-  BFc(fitne, hypothesis = "Trial.type1 < Maze1")
-
-```
-Questions: 
-1. What does the coef output tell us? Can we use it? Does it tell us anything more or more useful than the frequentist version?
-2. What is the Bayes factor? How do we test Hs that silence != masks
-3. How to visualize?
-4. How to get and compare predictions?
-
-```{r}
-mm0 <- bpnme(phase.circ ~ (1|group), 
-             data = train.data, its = 10000, burn = 100, n.lag = 3, seed = 42)
-
-mm1 <- bpnme(phase.circ ~ conditon + (1|group), 
-             data = train.data, its = 10000, burn = 100, n.lag = 3, seed = 42)
-
-mm2 <- bpnme(phase.circ ~ condition + modulation + (1|group), 
-             data = train.data[train.data$modulation==0,], its = 100, burn = 100, n.lag = 3, seed = 42)
-
-mm2prime <- bpnme(phase.circ ~ condition + modulation + (1|group), 
-             data = train.data, its = 10000, burn = 100, n.lag = 3, seed = 42)
-```
-
-# summary statistics (mean, mode, standard deviation and 95% highest posterior density interval) of the posterior samples of circular coefficients
-```{r}
+# just condition
 m1 <- bpnr(phase.circ ~ condition,
-             data = train.data)
-  #m1
-  #coef_circ(m1, type = "categorical", units = "radians")
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
 
+  coef_circ(m1, type = "categorical", units = "radians")
+
+# condition + modulation  
 m2 <- bpnr(phase.circ ~ condition + modulation,
-             data = train.data)
-  #m2 
-  #coef_circ(m2, type = "categorical", units = "radians")
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
 
-  #traceplot(m2, parameter = "beta1")
-  
-  # BFs
-  # BFc(m2, hypothesis = "`conditionfull mask` < `conditionhalf mask`")
+  coef_circ(m2, type = "categorical", units = "radians")
 
-
+# condition * modulation
 m2prime <- bpnr(phase.circ ~ condition * modulation,
-             data = train.data)
-  #m2prime
-  
-  #coef_circ(m2prime, type = "categorical", units = "radians")
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
 
-  #BFc(m2prime, hypothesis = "modulation1 < condition2")
+  coef_circ(m2prime, type = "categorical", units = "radians")
+```
 
-
-fit(m1)
-fit(m2)
-fit(m2prime)
-
+Can also model the effect of condition for modulation rates separately:
+```{r eval=FALSE, include=FALSE}
+# model with modulation = 8Hz only
 m1.8 <- bpnr(phase.circ ~ condition,
-             data = train.data[train.data$modulation==0,], its = 10000, burn = 750, n.lag = 3, seed = 42)
-  m1.8
+             data = glm.calls[glm.calls$modulation==0,], its = 100, burn = 50, n.lag = 3, seed = 42)
+  
   coef_circ(m1.8, type = "categorical", units = "radians")
 
-  BFc(m1.8, hypothesis = "condition2 < condition1") # half is more similar to silence than full is 
-
-
-  
+# model with modulation = 15Hz only
 m1.15 <- bpnr(phase.circ ~ condition,
-             data = train.data[train.data$modulation==1,], its = 10000, burn = 750, n.lag = 3, seed = 42)
-  m1.15
+             data = glm.calls[glm.calls$modulation==1,], its = 100, burn = 50, n.lag = 3, seed = 42)
+
   coef_circ(m1.15, type = "categorical", units = "radians")
-  
-  
-  
-  
-  
-  
 ```
+
+
+##### Fixed and random effects
+
+Note that this runs only on our cluster and not on my local computer (32 GB RAM + a GPU). 
+I'd appreciate any tips for optimizing that may allow it to run on a computer with 
+that capacity. :)
+```{r eval=FALSE}
+mm0 <- bpnme(phase.circ ~ (1|group), 
+             data = glm.calls, its = 100, burn = 100, n.lag = 3, seed = 42)
+
+mm1 <- bpnme(phase.circ ~ conditon + (1|group), 
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
+
+mm2 <- bpnme(phase.circ ~ condition + modulation + (1|group), 
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
+
+mm2prime <- bpnme(phase.circ ~ condition * modulation + (1|group), 
+             data = glm.calls, its = 1000, burn = 100, n.lag = 3, seed = 42)
+```
+
+## Issues/Questions
+
+1. While my outcome variable (in radians) consists of values between 0 and 2pi, I
+get posterior means that are negative. I can understand why posterior mean *differences*
+may be negative, but am somewhat confused by the results here. 
+
+2. One of the main comparisons of interest for our study is the difference in
+the distribution of the outcome variable for `condition`==0 ("A") and `condition`==1 ("B"),
+conditional on the value of `modulation`.  
+This means that the posterior means are readily usable for us. However, I would also 
+like to obtain Bayes Factors for the differences in the circular means between 
+the intercept and the two other levels. However, the following does not seem to be possible:
+
+```{r}
+#BFc(m2prime, hypothesis = "(Intercept) < condition2")
+```
+How might I go about this, shy of running a different model where I switch the coding
+of the conditions?
+
+3. Regression curves: I would like to obtain something like a regression curve that I could plot over
+existing data. However, it seems that I cannot get regression curve parameters
+without a continuous predictor.
+Is there a structural (mathematical) reason for this, or has it perhaps just not 
+yet been implemented?
+
+4. Prediction: I would like to use the model to generate predicted values. However, 
+trying to do this by passing the model object to R's `predict()` returns an error: 
+`no applicable method for 'predict' applied to an object of class "c('bpnr', 'list')"`...
+
+```{r}
+#predict(m2prime)
+```
+
+Is there a native way to extract predicted values from the circular models? If not, 
+can you recommend a workaround?
+Relatedly, I was not sure if this is what is obtained by doing the following: 
+```{r eval=FALSE, include=FALSE}
+#head(m2prime$beta1)
+#head(m2prime$beta2)
+```
+
+
+5. Visualizing model outcomes: With categorical predictors, are there any other
+estimated/predicted parameters that one can visualize other than predicted means?
+For example, confidence intervals or dispersion/concentration parameters (equivalent to
+Rao's test for dispersion)?
+
+## Feature Requests
+- Would it be possible to display variances into the model output? Similar to how lme4
+provides info on variance explained by each predictor?
+
+
+### Notes for self from the documentation
+
 If predictors are continuous:
 * `ax` = the location of the inflection point of the regression curve on the axis of the predictor.
 * `ac` = the location of the inflection point of the regression curve on the axis of the circular outcome.
 * `bc` = the slope of the tangent line at the inflection point. An increase of 1 unit of the predictor at the inflection point leads to a `bc` change in the circular outcome.
 * `AS` = the average slopes of the circular regression. An increase of 1 unit of the predictor leads to a `AS` change in the circular outcome on average.
-* `SAM` = the circular regression slopes at the mean.An increase of 1 unit of the predictor leads to a `SAM` change in the circular outcome at the average predictor value.
+* `SAM` = the circular regression slopes at the mean. An increase of 1 unit of the predictor leads to a `SAM` change in the circular outcome at the average predictor value.
 * `SSDO`= the signed shortest distance to the origin.
 
 If predictors are categorical:
@@ -171,8 +217,6 @@ Information Criterion, the `DIC_alt` is a version of the DIC that uses a
 slightly different definition of the effective number of parameters, the `WAIC1`
 and `WAIC2` are the two versions of the Watanabe-Akaike or Widely Available
 Information Criterion presented in Gelman et.al. (2014).
-
-### How to obtain the raw posterior estimates:
 
 Raw posterior estimates are stored in the following objects:
 
@@ -197,12 +241,4 @@ In circular mixed-effects models the following additional parameters can be obta
 * `cRI` = posterior samples of the mean resultant length of the circular random intercept, a measure of concentration. 
 
 
-## Issues
-
-- Means don't seem to be in range 0-2pi
-- Feature request: embed variances into model output
-Clarifications:
-- Confirm: cannot get regression curve parameters without a continuous predictor? Is there a structural reason for this? 
-- Prediction: extract predictions?
-- Plot: with categorial predictors, any outcome we can visualize other than predicted means?
 

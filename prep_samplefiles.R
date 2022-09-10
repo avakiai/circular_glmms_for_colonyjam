@@ -16,7 +16,7 @@ calls_og <- read.csv(file.path(data_path,'exp_1_call_data.csv')) %>%
 
 head(calls_og)
 
-dat <- calls_og %>% select(modulation, group, session, part, condition, minute, starts, ends, starts.sp, ends.sp, start.per, end.per)
+dat <- calls_og %>% select(modulation, group, session, condition, minute, start.per)
 
 head(dat)
 
@@ -27,7 +27,11 @@ nrow(dat2)
 
 dat3 <- dat2 %>% mutate(condition = case_when(condition == "silence" ~ "A",
                                               condition == "full mask" ~ "B",
-                                              condition == "half mask" ~ "C"))
+                                              condition == "half mask" ~ "C")) %>%
+                 mutate(max.per = 1/modulation, .before = "start.per") %>% 
+                # convert period of call onsets into phases between 0 and 2pi
+                mutate(start.phase = (start.per/max.per)*(2*pi), .before = "start.per") %>%
+                select(-max.per)
 
 
 View(dat3)
